@@ -132,7 +132,7 @@
 (defn sync-txs [{:keys [tx-log tx-ingester document-store] :as crux-node}]
   (with-open [txs (open-tx-log tx-log (::tx/tx-id (crux/latest-completed-tx crux-node)))]
     (doseq [{:keys [docs ::tx/tx-events] :as tx} (iterator-seq txs)]
-      (let [in-flight-tx (db/begin-tx tx-ingester tx)]
+      (let [in-flight-tx (db/begin-tx tx-ingester tx nil)]
         (try
           (db/submit-docs document-store docs)
           (db/index-tx-events in-flight-tx tx-events)
@@ -142,11 +142,6 @@
             (db/abort in-flight-tx)
             ;; TODO behaviour here? abort consumption entirely?
             ))))))
-
-(defn ->document-mapper [_]
-  (fn [doc]
-    (when (instance? CruxState doc)
-      [doc])))
 
 (defn ->tx-log {::sys/deps {:dialect 'crux.corda.h2/->dialect
                             :tx-ingester :crux/tx-ingester

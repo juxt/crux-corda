@@ -17,7 +17,7 @@ cordapp {
 
 dependencies {
     implementation("org.clojure", "clojure", "1.10.0")
-    implementation("juxt", "crux-core", "20.09-1.12.1-beta")
+    implementation("juxt", "crux-core", "21.01-1.14.0-beta")
     implementation("seancorfield", "next.jdbc", "1.1.588")
     implementation(project(":crux-corda-state"))
 

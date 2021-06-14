@@ -1,19 +1,78 @@
 = Crux Corda
+:toc:
+:toc-placement: preamble
+:toclevels: 2
 
-A https://opencrux.com[Crux] library that allows you to pipe verified https://www.corda.net/[Corda] transactions into a Crux node, to then query using Crux's bitemporal Datalog query engine.
 
-Things of interest:
+A library that allows you to pipe verified https://docs.corda.net/docs/corda-os/4.8/api-transactions.html[Corda transactions] into a https://opencrux.com[Crux] node, to then query using Crux's bitemporal Datalog query engine.We recommend you read our https://juxt.pro/blog/on-bridging-databases-and-blockchain[featured blog post "On bridging blockchain and databases"] to learn more about the background for this library.
 
-`crux-corda` library::
+== Corda 101
 
-* `crux-corda/src/main/kotlin/crux/corda/CruxCorda.kt` - entry point for the Crux driver, adds extension functions to `AppServiceHub`
-* `crux-corda/src/main/clojure/crux/corda.clj` - the implementation of the Crux driver
-* `crux-corda-state/src/main/kotlin/crux/corda/state/CruxState.kt` - interface that Corda states should implement to be included in Crux
+https://www.corda.net/[Corda] is a blockchain development platform. It embraces a permissioned distributed ledger model based on Public Key Infrastructure.
 
-Example user app::
+It is primarily written in https://kotlinlang.org/[Kotlin], a member of the JVM family of languages.
 
-* `iou-contract/src/main/kotlin/com/example/contract/IOUState.kt` - example of a Corda state with a Crux mapping
-+
+https://docs.corda.net/docs/corda-os/4.8/cordapp-overview.html[CordDApps] (Corda Distributed Applications) are distributed applications that run on the Corda platform. The goal of a CorDapp is to allow nodes to reach agreement on updates to the ledger. They achieve this goal by defining flows that Corda node owners can invoke over RPC.
+
+== Requirements
+
+If you already run a CorDApp and are looking to integrate Crux as a new feature, feel free to skip this section.
+
+If you are new to Corda, we recommend going through the following material:
+
+. https://docs.corda.net/docs/corda-os/4.8/key-concepts.html[Key Concepts]. In particular *States*, *Flows*, and *Transactions*
+. Going over the https://docs.corda.net/docs/corda-os/4.7/hello-world-introduction.html[Hello World tutorial]
+. https://docs.corda.net/docs/corda-os/4.8/node-services.html[The Service Hub], not essential but a good troubleshooting reference
+
+== Preparing your CorDApp to use `crux-corda`
+
+Flows can't query Crux out of the box. In order to integrate `crux-corda`
+
+. States must implement the `CruxState` interface so they can be consumed by `crux-corda` and piped into Crux.
+. Register Crux with Corda's ServiceHub
+. Optionally, we can filter which states get piped in
+
+image::https://juxt-resources.netlify.app/img/crux-corda-diag.png["Flow diagram",width=700]
+
+We will use the *IOU CorDApp* to further illustrate the setup.
+
+=== Getting Started
+
+WARNING: This project is still in an experimental phase. It has not been uploaded to Maven.
+
+WARNING: `crux-corda` is currently compatible with `crux` no __later__ than version https://github.com/juxt/crux/releases/tag/21.01-1.14.0[`21.01-1.14.0-beta`]
+
+NOTE: This section assumes you are on a Corda Project, eg. `IOU CorDApp` from the https://docs.corda.net/docs/corda-os/4.7/hello-world-introduction.html[Hello World tutorial], and using Gradle as a build tool.
+
+Start by cloning this repo. Locate the `crux-corda` and `crux-corda-state` directories within. Copy them into your project root, and let Gradle know about them in `settings.gradle.kts`.
+
+[source,kotlin]
+----
+// ...
+include("crux-corda-state", "crux-corda", ....)
+----
+
+This way you can later reference them as project dependencies in a `build.gradle.kts`. Don't forget to include `crux` as well.
+
+[source,kotlin]
+----
+dependencies{
+    // ...
+    implementation("juxt", "crux-core", "20.09-1.12.1-beta")
+    cordapp(project(":crux-corda-state"))
+    cordapp(project(":crux-corda"))
+    // ...
+}
+
+----
+
+=== Implement the CruxState interface
+
+States in Corda have a schema and live in memory as Objects. Crux in contrast deals with schemaless EAV triples.
+
+In order for `crux-corda` to consume a Corda state it must first implement `CruxState`
+
+.link:/iou-contract/src/main/kotlin/com/example/contract/IOUState.kt[] - example of a Corda state with a Crux mapping
 [source,kotlin]
 ----
 @BelongsToContract(IOUContract::class)
@@ -21,7 +80,7 @@ data class IOUState(val value: Int,
                     val lender: Party,
                     val borrower: Party,
                     override val linearId: UniqueIdentifier = UniqueIdentifier()) :
-    LinearState, QueryableState, CruxState {
+    LinearState, CruxState {
 
     override val cruxId = linearId.id
     override val cruxDoc: Map<String, Any> = mapOf(
@@ -30,20 +89,25 @@ data class IOUState(val value: Int,
         "iou-state/borrower" to borrower.name.toString())
 }
 ----
-* `iou-workflow/src/main/kotlin/com/example/service/CruxService.kt` - example of a CordaService that starts a Crux node
-+
+
+=== Configure and Run Crux in the Service Hub
+
+.In order to run Crux, register a new node like so
 [source,kotlin]
 ----
 @CordaService
-class CruxService(private val serviceHub: AppServiceHub) : SingletonSerializeAsToken() {
-
+class CruxService(private val serviceHub: AppServiceHub) : SingletonSerializableAsToken() {
     val node = serviceHub.startCruxNode {
         // configure node
     }
 }
 ----
-+
-By default, Crux looks out for Corda states that implement `CruxState`, but you can manually specify this mapping thus:
+
+By default, https://opencrux.com/reference/20.09-1.12.1/configuration.html[the Crux API] starts an in-memory node.
+
+WARNING: The only constraint to Crux's node configuration in this case is *you must use the custom Corda Tx Log*. By importing `crux-corda` as a dependency, the Crux API is automatically extended with the Corda Tx Log, as well as setting it up as default
+
+.Here is how to configure its behaviour. By default, any validated CruxState is piped into Crux.
 [source,kotlin]
 ----
 val node = serviceHub.startCruxNode {
@@ -55,8 +119,31 @@ val node = serviceHub.startCruxNode {
             else null
         }
     }
-
-    // ...
 }
 ----
-* `iou-workflow/src/test/kotlin/com/example/workflow/IOUFlowTests.kt` - E2E test for the IOU app
+
+== Querying Crux
+
+Since we are running a real Crux node, we can refer to the https://opencrux.com/reference/20.09-1.12.1/queries.html[Queries API] directly once we grab onto a Crux node reference.
+
+
+[source,kotlin]
+----
+val cruxNode = serviceHub.cordaService(CruxService::class.java)
+
+cruxNode.db().query("""
+    {:find [?l ?b ?v]
+     :where [[?iou :iou-state/lender ?l]
+             [?iou :iou-state/borrower ?b]
+             [?iou :iou-state/value ?v]]}
+    """.trimIndent())
+----
+
+TIP: Keep in mind the Crux database is not global, but local to each Corda node. You can't query facts that have happened in other nodes unless explicitly shared with yours through a Corda Flow.
+
+== Examples
+
+
+
+== Development
+

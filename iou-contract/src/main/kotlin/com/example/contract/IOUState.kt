@@ -25,7 +25,7 @@ data class IOUState(val value: Int,
                     val lender: Party,
                     val borrower: Party,
                     override val linearId: UniqueIdentifier = UniqueIdentifier()) :
-    LinearState, QueryableState, CruxState {
+    LinearState, CruxState {
 
     override val cruxId = linearId.id
     override val cruxDoc: Map<String, Any> = mapOf(
@@ -35,18 +35,4 @@ data class IOUState(val value: Int,
 
     /** The public keys of the involved parties. */
     override val participants: List<AbstractParty> get() = listOf(lender, borrower)
-
-    override fun generateMappedObject(schema: MappedSchema): PersistentState {
-        return when (schema) {
-            is IOUSchemaV1 -> IOUSchemaV1.PersistentIOU(
-                this.lender.name.toString(),
-                this.borrower.name.toString(),
-                this.value,
-                this.linearId.id
-            )
-            else -> throw IllegalArgumentException("Unrecognised schema $schema")
-        }
-    }
-
-    override fun supportedSchemas(): Iterable<MappedSchema> = listOf(IOUSchemaV1)
 }
