@@ -13,6 +13,9 @@ import net.corda.testing.node.TestCordapp
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import java.time.LocalDateTime
+import java.time.ZoneOffset
+import java.util.*
 import kotlin.test.assertEquals
 
 class IOUFlowTests {
@@ -29,7 +32,7 @@ class IOUFlowTests {
         a = network.createPartyNode()
         b = network.createPartyNode()
         // For real nodes this happens automatically, but we have to manually register the flow for tests.
-        listOf(a, b).forEach { it.registerInitiatedFlow(ExampleFlow.Acceptor::class.java) }
+        listOf(a, b).forEach { it.registerInitiatedFlow(IOUFlow.Acceptor::class.java) }
         network.runNetwork()
     }
 
@@ -43,7 +46,7 @@ class IOUFlowTests {
         val nodes = listOf(a, b)
 
         val iouValue = 1
-        val flow = ExampleFlow.Initiator(1, b.info.singleIdentity())
+        val flow = IOUFlow.Initiator(1, b.info.singleIdentity())
         val future = a.startFlow(flow)
         network.runNetwork()
 
@@ -72,6 +75,8 @@ class IOUFlowTests {
         for (node in nodes) {
             val cruxService = node.services.cordaService(CruxService::class.java)
             val cruxNode = cruxService.node
+            val inThreeDays = Date(LocalDateTime.now().plusDays(3).toEpochSecond(ZoneOffset.UTC)*1000)
+            val threeDaysAgo = Date(LocalDateTime.now().minusDays(3).toEpochSecond(ZoneOffset.UTC)*1000)
 
             assertEquals(1L, cruxService.cruxTx(signedTx.id)!![txIdKey])
             assertEquals(1L, cruxNode.latestCompletedTx()[txIdKey])
@@ -83,7 +88,69 @@ class IOUFlowTests {
                      :where [[?iou :iou-state/lender ?l]
                              [?iou :iou-state/borrower ?b]
                              [?iou :iou-state/value ?v]]}""".trimIndent())
-                    .first())
+                    .first()
+            )
+            assertEquals(
+                listOf(a.info.singleIdentity().name.toString(), b.info.singleIdentity().name.toString(), 1L),
+                cruxNode.db(inThreeDays).query("""
+                    {:find [?l ?b ?v] 
+                     :where [[?iou :iou-state/lender ?l]
+                             [?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/value ?v]]}""".trimIndent()).first()
+            )
+            assertEquals(
+                emptySet(),
+                cruxNode.db(threeDaysAgo).query("""
+                    {:find [?l ?b ?v] 
+                     :where [[?iou :iou-state/lender ?l]
+                             [?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/value ?v]]}"""
+                        .trimIndent())
+            )
         }
+    }
+
+    @Test
+    fun `A lends 23 to B, B buys a "house"`() {
+        val iouValue = 23
+        val iouFlow = IOUFlow.Initiator(iouValue, b.info.singleIdentity())
+        val future = a.startFlow(iouFlow)
+        network.runNetwork()
+
+        future.getOrThrow()
+
+        val cruxService = b.services.cordaService(CruxService::class.java)
+        val currentDb = cruxService.node.db()
+        val bName = b.info.singleIdentity().name.toString()
+
+        val borrowed = currentDb.query("""
+                    {:find [(sum ?v)] 
+                     :in [?b]
+                     :where [[?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/value ?v]]}
+            """.trimIndent(), bName).single()?.single() ?: 0
+
+        assert(borrowed == iouValue)
+
+        val itemName = "house"
+        val itemValue = 3
+        val itemFlow = ItemFlow.Initiator(itemValue, itemName)
+        b.startFlow(itemFlow)
+        network.runNetwork()
+
+        val newDb = cruxService.node.db()
+
+        assertEquals(
+                listOf(itemName, 3L),
+                newDb.query("""
+                    {:find [?name ?value] 
+                     :in [?lender]
+                     :where [[?iou :iou-state/borrower ?borrower]
+                             [?iou :iou-state/lender ?lender]
+                             [?item :item/owner ?borrower]
+                             [?item :item/name ?name]
+                             [?item :item/value ?value]]}
+            """.trimIndent(), a.info.singleIdentity().name.toString()).single())
+
     }
 }
