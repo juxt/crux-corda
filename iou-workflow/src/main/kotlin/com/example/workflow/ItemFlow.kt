@@ -11,26 +11,11 @@ import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
 
-/**
- * This flow allows two parties (the [Initiator] and the [Acceptor]) to come to an agreement about the IOU encapsulated
- * within an [IOUState].
- *
- * In our simple example, the [Acceptor] always accepts a valid IOU.
- *
- * These flows have deliberately been implemented by using only the call() method for ease of understanding. In
- * practice we would recommend splitting up the various stages of the flow into sub-routines.
- *
- * All methods called within the [FlowLogic] sub-class need to be annotated with the @Suspendable annotation.
- */
 object ItemFlow {
     @InitiatingFlow
     @StartableByRPC
     class Initiator(val itemValue: Int,
                     val itemName: String) : FlowLogic<SignedTransaction>() {
-        /**
-         * The progress tracker checkpoints each stage of the flow and outputs the specified messages when each
-         * checkpoint is reached in the code. See the 'progressTracker.currentStep' expressions within the call() function.
-         */
         companion object {
             object VERIFYING_FUNDS : ProgressTracker.Step("Verifying the owner has enough funds")
             object SIGNING_TRANSACTION : ProgressTracker.Step("Signing transaction with our private key.")
@@ -81,8 +66,8 @@ object ItemFlow {
                              [?item :item/value ?v]]}
             """.trimIndent(), me.name.toString()).singleOrNull()?.singleOrNull() as Long? ?: 0
 
+            // In order to buy something, we need to know we have enough money
             val balance = borrowed - lent - owned
-
 
             if (balance >= itemValue) {
                 val itemState = ItemState(itemName, itemValue, me)
@@ -92,7 +77,6 @@ object ItemFlow {
                         .addCommand(txCommand)
                 txBuilder.verify(serviceHub)
                 progressTracker.currentStep = SIGNING_TRANSACTION
-                // Sign the transaction.
                 val signedTx = serviceHub.signInitialTransaction(txBuilder)
                 return subFlow(FinalityFlow(transaction = signedTx, sessions = emptySet(), progressTracker = FINALISING_TRANSACTION.childProgressTracker()))
             }

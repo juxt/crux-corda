@@ -7,6 +7,9 @@ import net.corda.core.contracts.Command
 import net.corda.core.contracts.requireThat
 import net.corda.core.flows.*
 import net.corda.core.identity.Party
+import net.corda.core.node.services.Vault
+import net.corda.core.node.services.queryBy
+import net.corda.core.node.services.vault.QueryCriteria
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.utilities.ProgressTracker
@@ -54,30 +57,74 @@ object IOUFlow {
 
         override val progressTracker = tracker()
 
+        lateinit var txBuilder: TransactionBuilder
+        lateinit var txCommand: Command<IOUContract.Commands>
+        lateinit var iouState: IOUState
         /**
          * The flow logic is encapsulated within the call() method.
          */
         @Suspendable
         override fun call(): SignedTransaction {
 
-            // Obtain a reference from a notary we wish to use.
-            /**
-             *  METHOD 1: Take first notary on network, WARNING: use for test, non-prod environments, and single-notary networks only!*
-             *  METHOD 2: Explicit selection of notary by CordaX500Name - argument can by coded in flow or parsed from config (Preferred)
-             *
-             *  * - For production you always want to use Method 2 as it guarantees the expected notary is returned.
-             */
             val notary = serviceHub.networkMapCache.notaryIdentities.single() // METHOD 1
-            // val notary = serviceHub.networkMapCache.getNotary(CordaX500Name.parse("O=Notary,L=London,C=GB")) // METHOD 2
+            val myId = serviceHub.myInfo.legalIdentities.first()
+
+            /**
+             * Find any unconsumed states where both parties (ourselves and the other participant) are involved
+             */
+            val oldIOUList = serviceHub.vaultService.queryBy<IOUState>(QueryCriteria.VaultQueryCriteria(Vault.StateStatus.UNCONSUMED)).states.filter {
+                setOf(myId, otherParty) == setOf(it.state.data.borrower, it.state.data.lender)
+            }
 
             // Stage 1.
             progressTracker.currentStep = GENERATING_TRANSACTION
-            // Generate an unsigned transaction.
-            val iouState = IOUState(iouValue, serviceHub.myInfo.legalIdentities.first(), otherParty)
-            val txCommand = Command(IOUContract.Commands.Create(), iouState.participants.map { it.owningKey })
-            val txBuilder = TransactionBuilder(notary)
-                    .addOutputState(iouState, IOUContract.ID)
-                    .addCommand(txCommand)
+
+            /**
+             * Build a new IOUState and Command
+             */
+            when {
+                // 1. brand new IOUState -> CreateIOU Command
+                oldIOUList.isEmpty() -> {
+                    iouState = IOUState(value = iouValue,
+                            lender = myId,
+                            borrower = otherParty)
+                    txCommand = Command(IOUContract.Commands.CreateIOU(), iouState.participants.map { it.owningKey })
+                    txBuilder = TransactionBuilder(notary)
+                            .addOutputState(iouState, IOUContract.ID)
+                            .addCommand(txCommand)
+                }
+                // 2. Existing UNCONSUMED IOUState -> UpdateIOU Command
+                oldIOUList.size == 1 -> {
+                    val oldIOUData = oldIOUList.single().state.data
+                    // 2.1. We lend more money, new IOUState value is the sum of old and new value
+                    if (oldIOUData.lender == myId) {
+                        iouState = oldIOUData.copy(value = iouValue + oldIOUData.value)
+                    // 2.2. Money is borrowed from us
+                    } else {
+                        // 2.2.1 More money is borrowed from us than we borrowed previously
+                        // borrower and lender switch places
+                        if (iouValue > oldIOUData.value) {
+                            iouState = oldIOUData.copy(
+                                    value = iouValue - oldIOUData.value,
+                                    borrower = oldIOUData.lender,
+                                    lender = oldIOUData.borrower)
+                        // 2.2.2 Less money is borrowed from us than we borrowed previously
+                        } else {
+                            iouState = oldIOUData.copy(value = oldIOUData.value - iouValue)
+                        }
+
+                    }
+                    txCommand = Command(IOUContract.Commands.UpdateIOU(), iouState.participants.map { it.owningKey })
+                    txBuilder = TransactionBuilder(notary)
+                            .addInputState(oldIOUList.single())
+                            .addOutputState(iouState, IOUContract.ID)
+                            .addCommand(txCommand)
+                }
+                // 3. Lending and borrowing between two parties is a single linear state
+                else -> {
+                    throw FlowException("more than one UNCONSUMED state where the borrower and lender are the same")
+                }
+            }
 
             // Stage 2.
             progressTracker.currentStep = VERIFYING_TRANSACTION

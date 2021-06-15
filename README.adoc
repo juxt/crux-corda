@@ -143,7 +143,160 @@ TIP: Keep in mind the Crux database is not global, but local to each Corda node.
 
 == Examples
 
+This repo contains a more elaborate example app that builds on top of the https://docs.corda.net/docs/corda-os/4.7/hello-world-introduction.html[Hello World tutorial].
 
+We will limit ourselves to running our app inside tests by Mocking the network, as well as the Corda nodes. Should you want to run real nodes, follow the https://docs.corda.net/docs/corda-os/4.8/run-your-cordapp.html[tutorial on the subject].
 
-== Development
+Make sure you can run the `crux-corda:iou-workflow` tests either from your IDE or from the command line with `./gradlew -p iou-workflow test` from the project root.
+
+There's a total of 3 tests in `com.example.workflow.IOUFlowTests`.
+
+=== `flow records the correct IOU in both parties' vaults`
+We create an `IOUState` between nodes A and B. Since `IOUState` has been modified to implement `CruxState` in addition to `LinearState`, the `CordaService` on each node has picked up the transaction.
+
+.We can verify this by issuing a Crux Query
+[source,kotlin]
+----
+            assertEquals(
+                listOf(a.info.singleIdentity().name.toString(), b.info.singleIdentity().name.toString(), 1L),
+                cruxNode.db().query("""
+                    {:find [?l ?b ?v]
+                     :where [[?iou :iou-state/lender ?l]
+                             [?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/value ?v]]}""".trimIndent())
+                    .first()
+            )
+----
+
+.We can also verify that, at different points in time, the query returns the same result for a database value in the future, and no results for a database value in the past
+[source,kotlin]
+----
+            // Crux knows about the transaction three days from now
+            assertEquals(
+                listOf(a.info.singleIdentity().name.toString(), b.info.singleIdentity().name.toString(), 1L),
+                cruxNode.db(inThreeDays).query("""
+                    {:find [?l ?b ?v]
+                     :where [[?iou :iou-state/lender ?l]
+                             [?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/value ?v]]}""".trimIndent()).first()
+            )
+            // Crux does not know about the transaction three days ago
+            assertEquals(
+                emptySet(),
+                cruxNode.db(threeDaysAgo).query("""
+                    {:find [?l ?b ?v]
+                     :where [[?iou :iou-state/lender ?l]
+                             [?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/value ?v]]}"""
+                        .trimIndent())
+            )
+----
+
+=== `A lends money to B, B buys a "house"`
+
+We introduce a new State class - `com.example.contract.ItemState`. An item has a name, a value, and an owner. The owner of the item - a Corda Node - is the only party aware of the state.
+`com.example.workflow.ItemFlow` defines how to create a new `ItemState`. The catch is in order to do so, the Party needs a positive balance.
+
+.The balance depends on the money lent, borrowed, as well as other items' value. It is calculated as follows:
+----
+balance = money_borrowed - money_lent - owned_items_value
+----
+
+.We can calculate these values with a Crux query each.
+[source,kotlin]
+----
+val money_borrowed = currentDb.query("""
+        {:find [(sum ?v)]
+         :in [?b]
+         :where [[?iou :iou-state/borrower ?b]
+                 [?iou :iou-state/value ?v]]}
+""".trimIndent(), me.name.toString()).singleOrNull()?.singleOrNull() as Long? ?: 0
+val money_lent = currentDb.query("""
+        {:find [(sum ?v)]
+         :in [?l]
+         :where [[?iou :iou-state/lender ?l]
+                 [?iou :iou-state/value ?v]]}
+""".trimIndent(), me.name.toString()).singleOrNull()?.singleOrNull() as Long? ?: 0
+val owned_items_value = currentDb.query("""
+        {:find [(sum ?v)]
+         :in [?o]
+         :where [[?item :item/owner ?o]
+                 [?item :item/value ?v]]}
+""".trimIndent(), me.name.toString()).singleOrNull()?.singleOrNull() as Long? ?: 0
+----
+
+If we try to initiate an `ItemFlow` with a balance lesser than the value of the item, the flow throws an exception.
+
+As the test describes, we start by lending B enough money to buy an item. B can then start an `ItemFlow` to create an `ItemState`.
+
+.The query that follows exemplifies how, starting with a particular lender, we can retrieve all items that have been acquired by its borrowers, effectively turning 2 Corda vault queries into 1.
+[source,kotlin]
+----
+assertEquals(
+        listOf("house", 3L),
+        newDb.query("""
+            {:find [?name ?value]
+             :in [?lender]
+             :where [[?iou :iou-state/borrower ?borrower]
+                     [?iou :iou-state/lender ?lender]
+                     [?item :item/owner ?borrower]
+                     [?item :item/name ?name]
+                     [?item :item/value ?value]]}
+    """.trimIndent(), a.info.singleIdentity().name.toString()).single())
+----
+
+=== `A lends 10 to B, then B lends 20 to A, resulting in A owing 10`
+
+We modified `com.example.workflow.IOUFlow` and `com.example.contract.IOUContract` by allowing not only the creation of an `IOUState`, but its update. The updated flow dictate there can only be one active IOU statement between the same 2 parties. When a new `IOUFlow` is started by a node, we first fetch any existing `UNCONSUMED` `IOUState` between both parties.
+
+If none such state exists, we proceed as previously by creating a new state. In case there already exists one, we use it as an input to the new `Commands.UpdateIOU` in `IOUContract`. The new `IOUState.value` is calculated based on who is lending / borrowing, as well as the role of each party.
+
+At the end of the test, two Crux queries help us verify that
+
+. After the update, the roles have been reversed
++
+[source,kotlin]
+----
+// After the first transaction, B owes A money
+assertEquals(
+        listOf(10L, aId.toString(), bId.toString()),
+        firstDB.query("""
+            {:find [?v ?l ?b]
+             :where [[?iou :iou-state/borrower ?b]
+                     [?iou :iou-state/lender ?l]
+                     [?iou :iou-state/value ?v]]}
+        """.trimIndent()).single())
+
+// After the second transaction, A owes B money
+assertEquals(
+        listOf(10L, bId.toString(), aId.toString()),
+        secondDB.query("""
+            {:find [?v ?l ?b]
+             :where [[?iou :iou-state/borrower ?b]
+                     [?iou :iou-state/lender ?l]
+                     [?iou :iou-state/value ?v]]}
+        """.trimIndent()).single())
+----
+. Both versions of the database see the same entity updated, same as Corda does
++
+[source,kotlin]
+----
+// It is the same CRUX fact too
+assertEquals(
+        firstDB.query("""
+            {:find [?id]
+             :in [?l]
+             :where [[?iou :crux.db/id ?id]
+                     [?iou :iou-state/lender ?l]]}
+        """.trimIndent(), aId.toString()),
+        secondDB.query("""
+            {:find [?id]
+             :in [?b]
+             :where [[?iou :crux.db/id ?id]
+                     [?iou :iou-state/borrower ?b]]}
+        """.trimIndent(), aId.toString())
+----
+
+== Limitations
+== Contributing
 
