@@ -299,6 +299,33 @@ assertEquals(
         """.trimIndent(), aId.toString())
 ----
 
+=== `A lends 10 to B, but then retracts and deletes the IOU`
+
+In order for this test to run, we implemented the deletion of an `IOUState` by writing a new flow class `com.example.workflow.IOUFlow.DeleteIOUFlow`. We record the time at which A lends money to B and demonstrate Crux is able to keep up with deletions, and remember historical facts too.
+
+[source,kotlin]
+----
+// After the first transaction, B owes A money
+assertEquals(
+        listOf(10L, aId.toString(), bId.toString()),
+        firstDB.query("""
+            {:find [?v ?l ?b]
+             :where [[?iou :iou-state/borrower ?b]
+                     [?iou :iou-state/lender ?l]
+                     [?iou :iou-state/value ?v]]}
+        """.trimIndent()).single())
+
+// After the second transaction, no facts are visible
+assertEquals(
+        emptySet(),
+        secondDB.query("""
+            {:find [?v ?l ?b]
+             :where [[?iou :iou-state/borrower ?b]
+                     [?iou :iou-state/lender ?l]
+                     [?iou :iou-state/value ?v]]}
+        """.trimIndent()))
+----
+
 == Limitations
 
 Some limitations are conceptual, due to the nature of Corda and its integration with Crux. Others are technical, and can possibly be implemented in future feature releases.

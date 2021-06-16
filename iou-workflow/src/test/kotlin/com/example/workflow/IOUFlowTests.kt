@@ -10,6 +10,7 @@ import net.corda.testing.node.MockNetwork
 import net.corda.testing.node.MockNetworkParameters
 import net.corda.testing.node.StartedMockNode
 import net.corda.testing.node.TestCordapp
+import org.hibernate.sql.Delete
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
@@ -220,5 +221,49 @@ class IOUFlowTests {
                 """.trimIndent(), aId.toString())
 
         )
+    }
+
+    @Test
+    fun `A lends 10 to B, but then retracts and deletes the IOU`() {
+        // A lends 10 to B
+        val aId = a.info.singleIdentity()
+        val bId = b.info.singleIdentity()
+        val iouFlow = IOUFlow.Initiator(10, bId)
+        val firstFuture = a.startFlow(iouFlow)
+        network.runNetwork()
+        firstFuture.getOrThrow()
+
+        val firstCheckpoint = Date()
+        Thread.sleep(2000)
+
+        // A retracts
+        val deleteIouFlow = DeleteIOUFlow.Initiator(bId)
+        val secondFuture = a.startFlow(deleteIouFlow)
+        network.runNetwork()
+        secondFuture.getOrThrow()
+
+        // We get 2 separate Crux instances, one after each transaction
+        val firstDB = a.services.cordaService(CruxService::class.java).node.db(firstCheckpoint)
+        val secondDB = a.services.cordaService(CruxService::class.java).node.db()
+
+        // After the first transaction, at firstCheckpoint, B owes A money
+        assertEquals(
+                listOf(10L, aId.toString(), bId.toString()),
+                firstDB.query("""
+                    {:find [?v ?l ?b] 
+                     :where [[?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/lender ?l]
+                             [?iou :iou-state/value ?v]]}
+                """.trimIndent()).single())
+
+        // After the second transaction, no facts are visible
+        assertEquals(
+                emptySet(),
+                secondDB.query("""
+                    {:find [?v ?l ?b] 
+                     :where [[?iou :iou-state/borrower ?b]
+                             [?iou :iou-state/lender ?l]
+                             [?iou :iou-state/value ?v]]}
+                """.trimIndent()))
     }
 }

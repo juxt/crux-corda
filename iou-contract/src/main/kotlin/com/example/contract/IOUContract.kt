@@ -61,17 +61,33 @@ class IOUContract : Contract {
         }
     }
 
+    fun verifyDelete(tx: LedgerTransaction, signers: Set<PublicKey>) {
+        requireThat {
+            // Generic constraints around the IOU transaction.
+            "No outputs should be generated when deleting an IOU." using (tx.outputs.isEmpty())
+            "Only one output state should be created." using (tx.inputs.size == 1)
+            val input = tx.inputsOfType<IOUState>().single()
+            "The lender and the borrower cannot be the same entity." using (input.lender != input.borrower)
+            "All of the participants must be signers." using (signers.containsAll(input.participants.map { it.owningKey }))
+
+            // IOU-specific constraints.
+            "The IOU's value must be non-negative." using (input.value > 0)
+        }
+    }
+
     override fun verify(tx: LedgerTransaction) {
         val command = tx.commands.requireSingleCommand<Commands>()
         val signers = command.signers.toSet()
         when (command.value) {
             is Commands.CreateIOU -> verifyCreate(tx, signers)
             is Commands.UpdateIOU -> verifyUpdate(tx, signers)
+
         }
     }
 
     interface Commands : CommandData {
         class CreateIOU : Commands
         class UpdateIOU : Commands
+        class DeleteIOU : Commands
     }
 }
