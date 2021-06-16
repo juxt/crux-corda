@@ -152,50 +152,50 @@ Make sure you can run the `crux-corda:iou-workflow` tests either from your IDE o
 There's a total of 3 tests in `com.example.workflow.IOUFlowTests`.
 
 === `flow records the correct IOU in both parties' vaults`
-We create an `IOUState` between nodes A and B. Since `IOUState` has been modified to implement `CruxState` in addition to `LinearState`, the `CordaService` on each node has picked up the transaction.
+We create an `IOUState` between nodes A and B. Since `IOUState` has been modified to implement `CruxState` in addition to `LinearState`, the `CruxService` on each node was able to pick up the transaction
 
 .We can verify this by issuing a Crux Query
 [source,kotlin]
 ----
-            assertEquals(
-                listOf(a.info.singleIdentity().name.toString(), b.info.singleIdentity().name.toString(), 1L),
-                cruxNode.db().query("""
-                    {:find [?l ?b ?v]
-                     :where [[?iou :iou-state/lender ?l]
-                             [?iou :iou-state/borrower ?b]
-                             [?iou :iou-state/value ?v]]}""".trimIndent())
-                    .first()
-            )
+assertEquals(
+    listOf(a.info.singleIdentity().name.toString(), b.info.singleIdentity().name.toString(), 1L),
+    cruxNode.db().query("""
+        {:find [?l ?b ?v]
+         :where [[?iou :iou-state/lender ?l]
+                 [?iou :iou-state/borrower ?b]
+                 [?iou :iou-state/value ?v]]}""".trimIndent())
+        .first()
+)
 ----
 
 .We can also verify that, at different points in time, the query returns the same result for a database value in the future, and no results for a database value in the past
 [source,kotlin]
 ----
-            // Crux knows about the transaction three days from now
-            assertEquals(
-                listOf(a.info.singleIdentity().name.toString(), b.info.singleIdentity().name.toString(), 1L),
-                cruxNode.db(inThreeDays).query("""
-                    {:find [?l ?b ?v]
-                     :where [[?iou :iou-state/lender ?l]
-                             [?iou :iou-state/borrower ?b]
-                             [?iou :iou-state/value ?v]]}""".trimIndent()).first()
-            )
-            // Crux does not know about the transaction three days ago
-            assertEquals(
-                emptySet(),
-                cruxNode.db(threeDaysAgo).query("""
-                    {:find [?l ?b ?v]
-                     :where [[?iou :iou-state/lender ?l]
-                             [?iou :iou-state/borrower ?b]
-                             [?iou :iou-state/value ?v]]}"""
-                        .trimIndent())
-            )
+// Crux knows about the transaction three days from now
+assertEquals(
+    listOf(a.info.singleIdentity().name.toString(), b.info.singleIdentity().name.toString(), 1L),
+    cruxNode.db(inThreeDays).query("""
+        {:find [?l ?b ?v]
+         :where [[?iou :iou-state/lender ?l]
+                 [?iou :iou-state/borrower ?b]
+                 [?iou :iou-state/value ?v]]}""".trimIndent()).first()
+)
+// Crux does not know about the transaction three days ago
+assertEquals(
+    emptySet(),
+    cruxNode.db(threeDaysAgo).query("""
+        {:find [?l ?b ?v]
+         :where [[?iou :iou-state/lender ?l]
+                 [?iou :iou-state/borrower ?b]
+                 [?iou :iou-state/value ?v]]}"""
+            .trimIndent())
+)
 ----
 
 === `A lends money to B, B buys a "house"`
 
 We introduce a new State class - `com.example.contract.ItemState`. An item has a name, a value, and an owner. The owner of the item - a Corda Node - is the only party aware of the state.
-`com.example.workflow.ItemFlow` defines how to create a new `ItemState`. The catch is in order to do so, the Party needs a positive balance.
+`com.example.workflow.ItemFlow` defines how to create a new `ItemState`. The catch is in order to create a new `ItemState` with a transaction, the Party needs to have a positive balance.
 
 .The balance depends on the money lent, borrowed, as well as other items' value. It is calculated as follows:
 ----
@@ -211,12 +211,14 @@ val money_borrowed = currentDb.query("""
          :where [[?iou :iou-state/borrower ?b]
                  [?iou :iou-state/value ?v]]}
 """.trimIndent(), me.name.toString()).singleOrNull()?.singleOrNull() as Long? ?: 0
+
 val money_lent = currentDb.query("""
         {:find [(sum ?v)]
          :in [?l]
          :where [[?iou :iou-state/lender ?l]
                  [?iou :iou-state/value ?v]]}
 """.trimIndent(), me.name.toString()).singleOrNull()?.singleOrNull() as Long? ?: 0
+
 val owned_items_value = currentDb.query("""
         {:find [(sum ?v)]
          :in [?o]
@@ -277,7 +279,7 @@ assertEquals(
                      [?iou :iou-state/value ?v]]}
         """.trimIndent()).single())
 ----
-. Both versions of the database see the same entity updated, same as Corda does
+. Both versions of the Crux database see the same entity being updated, which is exactly what happened from Corda's point of view as well
 +
 [source,kotlin]
 ----
@@ -298,5 +300,43 @@ assertEquals(
 ----
 
 == Limitations
-== Contributing
 
+Some limitations are conceptual, due to the nature of Corda and its integration with Crux. Others are technical, and can possibly be implemented in future feature releases.
+
+=== Conceptual
+
+Conceptual limitations revolve around the fact Corda drives the data lifecycle, and some concepts / operations native to Crux are missing in Corda.
+
+* *The `crux.db/submit-tx` API is unavailable.*
++
+One would immediately break the pairing between Corda's Vault, and Crux's document store.
+* *Eviction - `:crux.tx/evict` - is not possible.*
++
+This operation does not exist in Corda.
+* *The past/future can't be modified.*
++
+Corda registers events at the time they occur in the ledger.
+
+=== Technical
+
+* In order to fetch a `StateAndRef` object to use as input for a new transaction, one must use Corda's `net.corda.core.node.services.VaultService`. Ideally, `crux-corda` would provide an API to obtain this object, so that the user can use `CruxService`'s queries only.
++
+Currently, this is the recommended way to obtain StateAndRef objects that have not yet been consumed - i.e. their latest version
+[source,kotlin]
+----
+serviceHub.vaultService.queryBy<IOUState>(QueryCriteria.VaultQueryCriteria(Vault.StateStatus.UNCONSUMED)).states.filter {
+    // optionally filter states based on some criteria
+}
+----
+
+== Licence
+
+The MIT License (MIT)
+
+Copyright © 2020-2021 JUXT LTD.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
