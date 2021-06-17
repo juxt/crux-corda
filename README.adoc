@@ -58,7 +58,7 @@ This way you can later reference them as project dependencies in a `build.gradle
 ----
 dependencies{
     // ...
-    implementation("juxt", "crux-core", "20.09-1.12.1-beta")
+    implementation("juxt", "crux-core", "21.01-1.14.0-beta")
     cordapp(project(":crux-corda-state"))
     cordapp(project(":crux-corda"))
     // ...
@@ -346,7 +346,7 @@ Corda registers events at the time they occur in the ledger.
 
 === Technical
 
-* In order to fetch a `StateAndRef` object to use as input for a new transaction, one must use Corda's `net.corda.core.node.services.VaultService`. Ideally, `crux-corda` would provide an API to obtain this object, so that the user can use `CruxService`'s queries only.
+* https://github.com/juxt/crux-corda/issues/3[Issue#3]: In order to fetch a `StateAndRef` object to use as input for a new transaction, one must use Corda's `net.corda.core.node.services.VaultService`. Ideally, `crux-corda` would provide an API to obtain this object, so that the user can use `CruxService`'s queries only.
 +
 Currently, this is the recommended way to obtain StateAndRef objects that have not yet been consumed - i.e. their latest version
 [source,kotlin]

@@ -143,6 +143,11 @@
             ;; TODO behaviour here? abort consumption entirely?
             ))))))
 
+(defn ->document-mapper [_]
+  (fn [doc]
+    (when (instance? CruxState doc)
+      [doc])))
+
 (defn ->tx-log {::sys/deps {:dialect 'crux.corda.h2/->dialect
                             :tx-ingester :crux/tx-ingester
                             :document-store :crux/document-store
