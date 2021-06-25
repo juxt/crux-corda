@@ -40,8 +40,6 @@ We will use the *IOU CorDApp* to further illustrate the setup.
 
 WARNING: This project is still in an experimental phase. It has not been uploaded to Maven.
 
-WARNING: `crux-corda` is currently compatible with `crux` no __later__ than version https://github.com/juxt/crux/releases/tag/21.01-1.14.0[`21.01-1.14.0-beta`]
-
 NOTE: This section assumes you are on a Corda Project, eg. `IOU CorDApp` from the https://docs.corda.net/docs/corda-os/4.7/hello-world-introduction.html[Hello World tutorial], and using Gradle as a build tool.
 
 Start by cloning this repo. Locate the `crux-corda` and `crux-corda-state` directories within. Copy them into your project root, and let Gradle know about them in `settings.gradle.kts`.
@@ -58,7 +56,7 @@ This way you can later reference them as project dependencies in a `build.gradle
 ----
 dependencies{
     // ...
-    implementation("juxt", "crux-core", "21.01-1.14.0-beta")
+    implementation("pro.juxt.crux", "crux-core", "1.17.1-rc1")
     cordapp(project(":crux-corda-state"))
     cordapp(project(":crux-corda"))
     // ...
